@@ -2,71 +2,93 @@ use std::{cmp::Ordering, rc::Rc, time::Instant};
 
 use rand::Rng;
 
-enum Level {
+// Points at either a first-level entry we're located at (Upper), or a
+// second-level entry we're located at along with the parent in the first level
+// (Lower).
+enum Position {
     Upper(usize),
     Lower(usize, usize),
 }
 
+// A trie iterator as described in the Leapfrog Triejoin paper, which can
+// iterate across the first variable and then drop down to the values where that
+// first variable is bound.
 struct Index {
-    level: Level,
+    level: Position,
+    // Data is stored in a two-level index:
+    //
+    //    1     2     3      4    5 6 7
+    //   /|\   / \   /|\    /|\   | | |
+    //  2 3 4 4   5 4 6 7  5 7 8  8 7 8
+    //
     data: Rc<Vec<(u64, Vec<u64>)>>,
 }
 
 impl Index {
     fn new(data: Rc<Vec<(u64, Vec<u64>)>>) -> Self {
         Self {
-            level: Level::Upper(0),
+            level: Position::Upper(0),
             data,
         }
     }
 
+    // In whatever level we are currently in, move the iterator to the given
+    // value, or to the next value that comes after.
     fn seek(&mut self, v: u64) {
         match &mut self.level {
-            Level::Upper(i) => {
+            Position::Upper(i) => {
                 let (Ok(idx) | Err(idx)) = self.data.binary_search_by_key(&v, |(x, _)| *x);
                 *i = idx;
             }
-            Level::Lower(i, j) => {
+            Position::Lower(i, j) => {
                 let (Ok(idx) | Err(idx)) = self.data[*i].1.binary_search(&v);
                 *j = idx;
             }
         }
     }
 
+    // Move from the lower position back up to the upper position. This
+    // "unbinds" the first variable.
     fn up(&mut self) {
         match self.level {
-            Level::Lower(i, _) => self.level = Level::Upper(i),
+            Position::Lower(i, _) => self.level = Position::Upper(i),
             _ => panic!(),
         }
     }
 
+    // Move from the upper position down to the lower position. This "binds" the
+    // current self.value().
     fn down(&mut self) {
         match self.level {
-            Level::Upper(i) => self.level = Level::Lower(i, 0),
+            Position::Upper(i) => self.level = Position::Lower(i, 0),
             _ => panic!(),
         }
     }
 
+    // Reset the iterator to the start, at its current level. A bound variable
+    // (i.e., if we are in the Lower position) remains bound.
     fn reset(&mut self) {
         match &mut self.level {
-            Level::Upper(i) => *i = 0,
-            Level::Lower(_, j) => *j = 0,
+            Position::Upper(i) => *i = 0,
+            Position::Lower(_, j) => *j = 0,
         }
     }
 
+    // The current value we are pointing at, at whatever level we're at.
     fn value(&self) -> Option<u64> {
         match self.level {
-            Level::Upper(i) => Some(self.data.get(i)?.0),
-            Level::Lower(i, j) => self.data.get(i)?.1.get(j).cloned(),
+            Position::Upper(i) => Some(self.data.get(i)?.0),
+            Position::Lower(i, j) => self.data.get(i)?.1.get(j).cloned(),
         }
     }
 
+    // Advance to the next value.
     fn next(&mut self) {
         match &mut self.level {
-            Level::Upper(i) => {
+            Position::Upper(i) => {
                 *i += 1;
             }
-            Level::Lower(_, j) => {
+            Position::Lower(_, j) => {
                 *j += 1;
             }
         }
@@ -74,6 +96,17 @@ impl Index {
 }
 
 fn main() {
+    // let data = Rc::new(vec![
+    //     (1, vec![2, 3, 4]),
+    //     (2, vec![4, 5]),
+    //     (3, vec![4, 6, 7]),
+    //     (4, vec![5, 7, 8]),
+    //     (5, vec![8]),
+    //     (6, vec![7]),
+    //     (7, vec![8]),
+    // ]);
+
+    // Generate a random graph.
     let mut data = Vec::new();
     let mut rng = rand::thread_rng();
     for i in 1_u64..1000 {
@@ -85,6 +118,8 @@ fn main() {
 
     // Q(a, b, c) <- R(a, b), S(b, c), T(a, c);
 
+    // Since we're finding triangles in a graph, use the same data for all
+    // three.
     let mut r = Index::new(data.clone());
     let mut s = Index::new(data.clone());
     let mut t = Index::new(data);
@@ -116,6 +151,7 @@ fn main() {
                                         t.seek(s_c);
                                     }
                                     Ordering::Equal => {
+                                        // We found a triangle!
                                         count += 1;
                                         s.next();
                                         t.next();
@@ -137,5 +173,5 @@ fn main() {
             }
         }
     }
-    println!("count = {} ({:?})", count, start.elapsed());
+    println!("found {} triangles in {:?}", count, start.elapsed());
 }
